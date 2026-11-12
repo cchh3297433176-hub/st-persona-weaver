@@ -1,11 +1,13 @@
 
 import { extension_settings, getContext } from "../../../extensions.js";
-import { saveSettingsDebounced, callPopup, getRequestHeaders, saveChat, reloadCurrentChat, saveCharacterDebounced } from "../../../../script.js";
+import { saveSettingsDebounced, callPopup, getRequestHeaders, saveChat, reloadCurrentChat, saveCharacterDebounced, getThumbnailUrl } from "../../../../script.js";
+import { getUserAvatars, user_avatar } from "../../../personas.js";
+import { generatePersonaAvatar, mountAvatarGenerator } from "./avatar.js";
 
 const extensionName = "st-persona-weaver";
-const CURRENT_VERSION = "3.4.6"; // Lifecycle/Timeline exception for not-yet-happened fields
+const CURRENT_VERSION = "3.5.0";
 
-const UPDATE_CHECK_URL = "https://raw.githubusercontent.com/sssilvia27/st-persona-weaver/main/manifest.json";
+const UPDATE_CHECK_URL = "https://raw.githubusercontent.com/cchh3297433176-hub/st-persona-weaver/main/manifest.json";
 
 // Storage Keys
 const STORAGE_KEY_HISTORY = 'pw_history_v29_new_template'; 
@@ -774,6 +776,34 @@ async function fetchAvatarAsBase64() {
         console.warn("[PW] Avatar fetch failed:", e);
         return null;
     }
+}
+
+async function uploadGeneratedAvatar(avatarId, blob) {
+    if (avatarId !== user_avatar) throw new Error('当前人设已切换，请重新生成头像。');
+
+    const form = new FormData();
+    form.append('avatar', blob, 'avatar.png');
+    form.append('overwrite_name', avatarId);
+    const response = await fetch('/api/avatars/upload', {
+        method: 'POST',
+        headers: getRequestHeaders({ omitContentType: true }),
+        body: form,
+    });
+    if (!response.ok) throw new Error(`头像上传失败（HTTP ${response.status}）。`);
+
+    await fetch(getThumbnailUrl('persona', avatarId), { cache: 'reload' }).catch(() => {});
+    if (avatarId === user_avatar) {
+        const thumb = getThumbnailUrl('persona', avatarId, true);
+        $('.mes[is_user="true"][force_avatar="false"] .avatar img').attr('src', thumb);
+        const reference = await fetchAvatarAsBase64();
+        if (avatarId === user_avatar) {
+            currentUserAvatarBase64 = reference;
+            renderAvatarStrip();
+        }
+    }
+    await getUserAvatars(true, avatarId).catch(error => {
+        console.warn('[PW] 刷新头像列表失败', error);
+    });
 }
 
 function wrapInputForSafety(request, oldText, isRefine) {
@@ -2086,6 +2116,15 @@ async function openCreatorPopup() {
                         <i class="fa-solid ${chatHistEnabled ? 'fa-rotate' : 'fa-magic'}"></i>
                     </div>
                 </div>
+                <div id="pw-avatar-generator" hidden style="margin-top:10px;">
+                    <img id="pw-generated-avatar" alt="生成的 User 人设头像" hidden
+                         style="width:144px;max-width:100%;aspect-ratio:1;border-radius:12px;margin-bottom:8px;">
+                    <div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px;">
+                        <button type="button" class="pw-btn" id="pw-generate-avatar">生成头像</button>
+                        <button type="button" class="pw-btn save" id="pw-apply-avatar" style="display:none;">设为当前人设头像</button>
+                        <span id="pw-avatar-status" role="status" style="font-size:0.85em;"></span>
+                    </div>
+                </div>
                 <button class="pw-btn gen" id="pw-btn-apply-template" style="display:none; margin-top:8px; width:100%;"><i class="fa-solid fa-file-import"></i> 应用到模版</button>
             </div>
         </div>
@@ -2447,7 +2486,27 @@ async function openCreatorPopup() {
 </div>
 `;
 
-    callPopup(html, 'text', '', { wide: true, large: true, okButton: "Close" });
+    const popup = callPopup(html, 'text', '', { wide: true, large: true, okButton: "Close" });
+    const avatarPanelElement = document.getElementById('pw-avatar-generator');
+    const $personaPanel = $(avatarPanelElement).closest('.pw-wrapper');
+    const avatarPanel = mountAvatarGenerator(avatarPanelElement, {
+        getDraft: () => uiStateCache.generationMode !== 'npc' && !isEditingTemplate
+            ? $personaPanel.find('#pw-result-text').val()?.trim()
+            : '',
+        getPersona: () => ({ id: user_avatar, name: getContext().name1 || 'User' }),
+        generate: (draft, signal, onStatus) => generatePersonaAvatar(
+            getContext(), draft, response => readSSEResponse(response, false), signal, onStatus,
+        ),
+        upload: uploadGeneratedAvatar,
+    });
+    const avatarPanelChanges = '.pw-mode-item, .pw-tab, #pw-toggle-edit-template, #pw-save-template, #pw-clear';
+    $personaPanel.on('input.pwAvatar change.pwAvatar', '#pw-result-text', avatarPanel.refresh);
+    $(document).on('click.pwAvatar', avatarPanelChanges, avatarPanel.refresh);
+    void popup.finally(() => {
+        $personaPanel.off('.pwAvatar');
+        $(document).off('click.pwAvatar', avatarPanelChanges, avatarPanel.refresh);
+        avatarPanel.dispose();
+    });
 
     updatePromise.then(updateInfo => {
         hasNewVersion = !!updateInfo;
@@ -4813,5 +4872,5 @@ jQuery(async () => {
     addPersonaButton(); 
     bindEvents(); 
     loadThemeCSS('style.css'); // Default theme
-    console.log("[PW] Persona Weaver Loaded (v2.7.2 - Hotfix)");
+    console.log(`[PW] Persona Weaver Loaded (v${CURRENT_VERSION})`);
 });
